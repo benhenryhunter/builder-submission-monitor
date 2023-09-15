@@ -16,11 +16,6 @@ type blockSubmission struct {
 	Timestamp            string `json:"timestamp"`
 }
 
-type slotEvent struct {
-	Slot      string `json:"slot"`
-	BlockHash string `json:"block"`
-}
-
 type payloadAttributeEvent struct {
 	Data payloadAttributeData `json:"data"`
 }

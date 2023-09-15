@@ -16,7 +16,7 @@ import (
 	browser "github.com/EDDYCJY/fake-useragent"
 )
 
-var relays = []string{
+var defaultRelays = []string{
 	"https://boost-relay.flashbots.net",
 	"https://bloxroute.regulated.blxrbdn.com",
 	"https://bloxroute.max-profit.blxrbdn.com",
@@ -26,15 +26,45 @@ var relays = []string{
 	"https://aestus.live",
 }
 
-var beaconClientHost string
+var defaultRelaysOfInterest = map[string]struct{}{
+	"https://bloxroute.regulated.blxrbdn.com":  {},
+	"https://bloxroute.max-profit.blxrbdn.com": {},
+}
+
+var (
+	beaconClientHost     string // beacon client host
+	relayURLFlag         string // comma separated list of relay urls
+	relaysOfInterestFlag string // comma separated list of relay urls
+
+	relayURLs        []string            // urls of all relays to check if they received the submission
+	relaysOfInterest map[string]struct{} // relays of interest (e.g. bloxroute)
+)
 
 func init() {
 	flag.StringVar(&beaconClientHost, "beacon-client", "http://localhost:5052", "beacon client host")
+	flag.StringVar(&relayURLFlag, "relays", "", "comma separated list of relay urls")
+	flag.StringVar(&relaysOfInterestFlag, "relays-of-interest", "", "comma separated list of relay urls")
 }
 
 func main() {
 
 	flag.Parse()
+
+	if relayURLFlag != "" {
+		relayURLs = strings.Split(relayURLFlag, ",")
+	} else {
+		relayURLs = defaultRelays
+	}
+
+	if relaysOfInterestFlag != "" {
+		for _, relay := range strings.Split(relaysOfInterestFlag, ",") {
+			relaysOfInterest[relay] = struct{}{}
+		}
+
+	} else {
+		relaysOfInterest = defaultRelaysOfInterest
+	}
+
 	url := fmt.Sprintf("%v/eth/v1/events?topics=payload_attributes", beaconClientHost)
 
 	fmt.Println("Starting to listen for beacon events at ", url)
@@ -70,27 +100,28 @@ func main() {
 				return
 			}
 
-			registeredRelays := getRegistration(relays, pubkey)
+			registeredRelays := getRegistration(relayURLs, pubkey)
 
-			time.Sleep(500 * time.Millisecond)
-			builderPubkey, relaySubmissions, err := checkSubmissions(data.Data.ParentBlockHash, relays)
+			time.Sleep(500 * time.Millisecond) // some data endpoints don't have submissions immediately available
+
+			builderPubkey, relaySubmissions, err := checkSubmissions(data.Data.ParentBlockHash, relayURLs)
 			if err != nil {
 				log.Print("could not check submissions", "err", err)
 				return
 			}
 
-			isBXRegistered := false
+			isRegisteredAtInterest := false
 
-			bxRelays := []string{}
+			registeredInterestedRelays := []string{}
 
 			for _, relay := range registeredRelays {
-				if strings.Contains(relay, "bloxroute") {
-					isBXRegistered = true
-					bxRelays = append(bxRelays, relay)
+				if _, ok := relaysOfInterest[relay]; ok {
+					isRegisteredAtInterest = true
+					registeredInterestedRelays = append(registeredInterestedRelays, relay)
 				}
 			}
 
-			if !isBXRegistered {
+			if !isRegisteredAtInterest {
 				if previousData.Data.ProposalSlot != data.Data.ProposalSlot {
 					previousData = data
 				}
@@ -102,16 +133,15 @@ func main() {
 			logMessage += fmt.Sprintf("Builder pubkey: %v\n", builderPubkey)
 
 			relays := ""
-			for _, bxRelay := range bxRelays {
-				if _, ok := relaySubmissions[bxRelay]; !ok {
-					relays += fmt.Sprintf("%v\n%s/relay/v1/data/bidtraces/builder_blocks_received?block_hash=%v\n", bxRelay, bxRelay, data.Data.ParentBlockHash)
+			for _, interestedRelay := range registeredInterestedRelays {
+				if _, ok := relaySubmissions[interestedRelay]; !ok {
+					relays += fmt.Sprintf("%v\n%s/relay/v1/data/bidtraces/builder_blocks_received?block_hash=%v\n", interestedRelay, interestedRelay, data.Data.ParentBlockHash)
 				}
 			}
 			if relays != "" {
 				logMessage += fmt.Sprintf("Relays not received: \n%v\n", relays)
 				fmt.Println(logMessage)
 			}
-
 		}
 
 		if previousData.Data.ProposalSlot != data.Data.ProposalSlot {
